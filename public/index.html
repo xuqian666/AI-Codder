@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 对话流式组件演示</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: #f5f7fa; min-height: 100vh; }
+    .app-container { max-width: 900px; margin: 0 auto; padding: 20px; }
+    .header { text-align: center; padding: 30px 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; margin-bottom: 20px; }
+    .header h1 { font-size: 28px; margin-bottom: 10px; }
+    .senclaw-chat-container { background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden; }
+    .senclaw-messages-wrapper { max-height: 600px; overflow-y: auto; padding: 20px; }
+    .senclaw-message { display: flex; gap: 12px; margin-bottom: 20px; animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .senclaw-message-user { flex-direction: row-reverse; }
+    .senclaw-message-avatar { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; background: #f0f0f0; flex-shrink: 0; }
+    .senclaw-message-content { max-width: 70%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; }
+    .senclaw-message-user .senclaw-message-content { background: #667eea; color: white; }
+    .senclaw-message-assistant .senclaw-message-content { background: #f5f7fa; color: #333; }
+    .senclaw-code-block { background: #282c34; color: #abb2bf; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; }
+    .senclaw-custom-ui-container { margin: 16px 0; padding: 16px; background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; }
+    .senclaw-echarts-chart { width: 100%; height: 400px; }
+    .senclaw-table { width: 100%; border-collapse: collapse; }
+    .senclaw-table th, .senclaw-table td { padding: 12px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+    .senclaw-table th { background: #f5f7fa; font-weight: 600; }
+    .senclaw-loading { display: flex; align-items: center; gap: 10px; padding: 20px; }
+    .senclaw-loading-dot { width: 8px; height: 8px; background: #667eea; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
+    .senclaw-loading-dot:nth-child(1) { animation-delay: -0.32s; }
+    .senclaw-loading-dot:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+    .senclaw-cancel-btn { margin-left: 20px; padding: 6px 16px; background: #ff4d4f; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .senclaw-error { background: #fff2f0; border: 1px solid #ffccc7; color: #ff4d4f; padding: 12px 16px; border-radius: 4px; margin-top: 10px; }
+    .input-area { padding: 20px; border-top: 1px solid #e0e0e0; background: #fafafa; }
+    .input-form { display: flex; gap: 12px; }
+    .input-field { flex: 1; padding: 12px 16px; border: 1px solid #d9d9d9; border-radius: 8px; font-size: 14px; outline: none; }
+    .input-field:focus { border-color: #667eea; }
+    .send-btn { padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <div class="header"><h1>🤖 AI 对话流式组件</h1><p>支持 Markdown · 自定义 UI · Echarts 图表</p></div>
+    <div id="chat-root"></div>
+  </div>
+  <script crossorigin src="https://unpkg.com/react@16/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@16/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function parseCustomUI(code) {
+      if (!code || typeof code !== 'string') return null;
+      const trimmed = code.trim();
+      if (!trimmed.startsWith('senclaw-ui-json')) return null;
+      try {
+        const jsonStart = trimmed.indexOf('{');
+        if (jsonStart === -1) return null;
+        const parsed = JSON.parse(trimmed.substring(jsonStart));
+        return (parsed && parsed.type) ? parsed : null;
+      } catch (e) { return null; }
+    }
+
+    function EchartsRenderer({ option, style = {} }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (ref.current && option && window.echarts) {
+          const chart = window.echarts.init(ref.current);
+          chart.setOption(option);
+          const onResize = () => chart.resize();
+          window.addEventListener('resize', onResize);
+          return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
+        }
+      }, [option]);
+      return <div ref={ref} className="senclaw-echarts-chart" style={{ width: '100%', height: '400px', ...style }} />;
+    }
+
+    function CustomTable({ data = [], columns = [] }) {
+      if (!data.length) return <div>暂无数据</div>;
+      return (
+        <table className="senclaw-table">
+          <thead><tr>{columns.map((c, i) => <th key={i}>{c.title || c.dataIndex}</th>)}</tr></thead>
+          <tbody>{data.map((row, ri) => <tr key={ri}>{columns.map((c, ci) => <td key={ci}>{row[c.dataIndex]}</td>)}</tr>)}</tbody>
+        </table>
+      );
+    }
+
+    function CustomCodeBlock({ children }) {
+      const code = String(children).replace(/\n$/, '');
+      const custom = parseCustomUI(code);
+      if (custom) {
+        if (custom.type === 'echarts') return <div className="senclaw-custom-ui-container"><EchartsRenderer option={custom.option} /></div>;
+        if (custom.type === 'table') return <div className="senclaw-custom-ui-container"><CustomTable data={custom.data} columns={custom.columns} /></div>;
+      }
+      return <pre className="senclaw-code-block"><code>{children}</code></pre>;
+    }
+
+    function ChatContainer({ streamUrl = 'http://localhost:3001/api/chat/stream' }) {
+      const [messages, setMessages] = useState([]);
+      const [isLoading, setIsLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [input, setInput] = useState('');
+      const endRef = useRef(null);
+      const abortRef = useRef(null);
+
+      useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+      const send = async (msg) => {
+        setMessages(prev => [...prev, { id: Date.now(), role: 'user', content: msg, time: new Date().toISOString() }]);
+        setInput(''); setIsLoading(true); setError(null);
+        if (abortRef.current) abortRef.current.abort();
+        abortRef.current = new AbortController();
+        try {
+          const res = await fetch(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }), signal: abortRef.current.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let text = '';
+          setMessages(prev => [...prev, { id: Date.now() + 1, role: 'assistant', content: '', time: new Date().toISOString() }]);
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = dec.decode(value, { stream: true });
+            for (const line of chunk.split('\n')) {
+              if (line.startsWith('data: ')) {
+                const d = line.slice(6);
+                if (d === '[DONE]') break;
+                text += d;
+              } else if (line.trim()) text += line;
+            }
+            setMessages(prev => { const arr = [...prev]; const last = arr[arr.length - 1]; if (last?.role === 'assistant') last.content = text; return arr; });
+          }
+          setIsLoading(false);
+        } catch (e) { if (e.name !== 'AbortError') { setError(e.message); setIsLoading(false); } }
+      };
+
+      const submit = (e) => { e.preventDefault(); if (input.trim() && !isLoading) send(input.trim()); };
+
+      return (
+        <div className="senclaw-chat-container">
+          <div className="senclaw-messages-wrapper">
+            {messages.map(m => (
+              <div key={m.id} className={`senclaw-message senclaw-message-${m.role}`}>
+                <div className="senclaw-message-avatar">{m.role === 'user' ? '👤' : '🤖'}</div>
+                <div><div className="senclaw-message-content">{React.createElement(ReactMarkdown, { components: { code: CustomCodeBlock } }, m.content)}</div><div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>{new Date(m.time).toLocaleTimeString()}</div></div>
+              </div>
+            ))}
+            {isLoading && <div className="senclaw-loading"><span className="senclaw-loading-dot" /><span className="senclaw-loading-dot" /><span className="senclaw-loading-dot" /><button className="senclaw-cancel-btn" onClick={() => { abortRef.current?.abort(); setIsLoading(false); }}>停止</button></div>}
+            {error && <div className="senclaw-error">错误：{error}<button onClick={() => setError(null)} style={{ marginLeft: 10 }}>关闭</button></div>}
+            <div ref={endRef} />
+          </div>
+          <form className="input-area" onSubmit={submit}>
+            <div className="input-form">
+              <input className="input-field" placeholder="输入消息...（试试："你好"、"图表"、"数据"）" value={input} onChange={e => setInput(e.target.value)} disabled={isLoading} />
+              <button type="submit" className="send-btn" disabled={isLoading || !input.trim()}>发送</button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    // 简化的 Markdown 渲染器（不依赖外部库）
+    function ReactMarkdown({ children, components = {} }) {
+      const CodeBlock = components.code || 'pre';
+      const parts = [];
+      let remaining = children || '';
+      let id = 0;
+      
+      // 处理代码块
+      const codeRegex = /```(\w+)?\n([\s\S]*?)```/g;
+      let lastIndex = 0;
+      let match;
+      
+      while ((match = codeRegex.exec(remaining)) !== null) {
+        if (match.index > lastIndex) {
+          const text = remaining.slice(lastIndex, match.index);
+          parts.push(<span key={id++}>{renderInline(text)}</span>);
+        }
+        parts.push(<CodeBlock key={id++}>{match[2]}</CodeBlock>);
+        lastIndex = match.index + match[0].length;
+      }
+      
+      if (lastIndex < remaining.length) {
+        parts.push(<span key={id++}>{renderInline(remaining.slice(lastIndex))}</span>);
+      }
+      
+      return <div>{parts.length ? parts : renderInline(children)}</div>;
+    }
+
+    function renderInline(text) {
+      if (!text) return text;
+      // 简单处理粗体、斜体等
+      return text.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g).map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) return <strong key={i}>{part.slice(2, -2)}</strong>;
+        if (part.startsWith('*') && part.endsWith('*')) return <em key={i}>{part.slice(1, -1)}</em>;
+        if (part.startsWith('`') && part.endsWith('`')) return <code key={i} style={{ background: '#f0f0f0', padding: '2px 6px', borderRadius: 4 }}>{part.slice(1, -1)}</code>;
+        return part;
+      });
+    }
+
+    ReactDOM.render(<ChatContainer />, document.getElementById('chat-root'));
+  </script>
+</body>
+</html>
